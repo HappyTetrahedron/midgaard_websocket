@@ -22,6 +22,7 @@ import (
 	"log"
 
 	"github.com/google/uuid"
+	cmap "github.com/orcaman/concurrent-map/v2"
 	"github.com/reiver/go-telnet"
 )
 
@@ -31,17 +32,17 @@ type Session struct {
 	Error chan error
 }
 
-var sessions map[uuid.UUID]*Session
+var sessions cmap.ConcurrentMap[string, *Session]
 var mercHost string
 
 func initSessions(host string) error {
-	sessions = make(map[uuid.UUID]*Session)
+	sessions = cmap.New[*Session]()
 	mercHost = host
 	return nil
 }
 
 func getSession(wsid uuid.UUID) *Session {
-	session, ok := sessions[wsid]
+	session, ok := sessions.Get(wsid.String())
 	if !ok {
 		session = newSession(wsid)
 	}
@@ -50,7 +51,7 @@ func getSession(wsid uuid.UUID) *Session {
 
 func newSession(wsId uuid.UUID) *Session {
 	session := Session{wsId, make(chan *string), make(chan error)}
-	sessions[wsId] = &session
+	sessions.Set(wsId.String(), &session)
 	startSession(&session)
 	log.Println("Started session for ID:", wsId)
 	return &session
@@ -79,12 +80,12 @@ func startSession(session *Session) {
 				case <-telnetErrorOut:
 					log.Default().Println("telnet error")
 					cancelWs(session.WsId)
-					delete(sessions, session.WsId)
+					sessions.Remove(session.WsId.String())
 					return
 				case err := <-session.Error:
 					log.Default().Println("ws error")
 					telnetErrorIn <- err
-					delete(sessions, session.WsId)
+					sessions.Remove(session.WsId.String())
 				}
 			}
 		}()

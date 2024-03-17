@@ -25,6 +25,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	cmap "github.com/orcaman/concurrent-map/v2"
 )
 
 type WsConfig struct {
@@ -32,9 +33,9 @@ type WsConfig struct {
 }
 
 type WsData struct {
-	WsId    uuid.UUID
+	WsId        uuid.UUID
 	SendChannel chan *string
-	CancelFunc context.CancelFunc
+	CancelFunc  context.CancelFunc
 }
 
 const (
@@ -54,7 +55,7 @@ const (
 	closeGracePeriod = 10 * time.Second
 )
 
-var connections map[uuid.UUID]*WsData
+var connections cmap.ConcurrentMap[string, *WsData]
 
 func receiveWorker(ws *websocket.Conn, id uuid.UUID) {
 	ws.SetReadLimit(maxMessageSize)
@@ -112,7 +113,10 @@ func ping(ws *websocket.Conn, id uuid.UUID, ctx context.Context) {
 }
 
 func sendToWs(wsId uuid.UUID, body string) {
-	connections[wsId].SendChannel <- &body
+	conn, ok := connections.Get(wsId.String())
+	if ok {
+		conn.SendChannel <- &body
+	}
 }
 
 var upgrader = websocket.Upgrader{}
@@ -132,10 +136,10 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	data := WsData{
 		SendChannel: sendChannel,
-		CancelFunc: cancel,
-		WsId: id,
+		CancelFunc:  cancel,
+		WsId:        id,
 	}
-	connections[id] = &data
+	connections.Set(id.String(), &data)
 	// TODO this is where we send shit
 
 	go receiveWorker(ws, id)
@@ -144,8 +148,11 @@ func serveWs(w http.ResponseWriter, r *http.Request) {
 }
 
 func cleanupWs(id uuid.UUID) {
-	connections[id].CancelFunc()
-	delete(connections, id)
+	conn, ok := connections.Get(id.String())
+	if ok {
+		conn.CancelFunc()
+		connections.Remove(id.String())
+	}
 }
 
 func serveHome(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +168,7 @@ func serveHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func initWebsockets(config WsConfig) error {
-	connections = make(map[uuid.UUID]*WsData)
+	connections = cmap.New[*WsData]()
 	http.HandleFunc("/", serveHome)
 	http.HandleFunc("/ws", serveWs)
 	server := &http.Server{
@@ -174,8 +181,8 @@ func initWebsockets(config WsConfig) error {
 }
 
 func cancelWs(wsId uuid.UUID) {
-	data, succ := connections[wsId]
-	if succ {
-		data.CancelFunc()
+	conn, ok := connections.Get(wsId.String())
+	if ok {
+		conn.CancelFunc()
 	}
 }
